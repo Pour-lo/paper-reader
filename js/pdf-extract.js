@@ -552,7 +552,11 @@ function contentBand(lines, pageHeight, pageWidth, dropSet, vectorRects) {
   for (const l of lines || []) {
     const t = tidyText(l.text);
     const h = (l.fontSize || 10) * 1.55;
-    const footish = dropSet.has(normalizeHeader(l.text)) || PAGE_NUM_RE.test(t) || isRunningJournalLine(t);
+    // Page numbers must sit in a corner. Lone digits in a drawing ("5" of "5英尺")
+    // must not pull the header band down into the figure.
+    const corner = l.x < pageWidth * 0.16 || (l.x2 || l.x) > pageWidth * 0.84;
+    const pageNum = PAGE_NUM_RE.test(t) && corner && t.replace(/\s/g, "").length <= 4;
+    const footish = dropSet.has(normalizeHeader(l.text)) || pageNum || isRunningJournalLine(t);
     if (!footish) continue;
     if (l.y < pageHeight * 0.08) headerBottom = Math.max(headerBottom, l.y + h);
     if (l.y > pageHeight * 0.86) footerTop = Math.min(footerTop, l.y - 16);
@@ -600,8 +604,10 @@ function mergeFigureMaterials(rasters, drawings, annRegions, pageWidth, pageHeig
 
 function tightenRegion(rect, bodyLines, captionY) {
   let r = { ...rect };
+  // captionY is a hard max bottom (already padded for labels). Do not
+  // subtract extra points or mid-glyph labels just above a caption get cut.
   if (typeof captionY === "number") {
-    if (r.y + r.h > captionY - 2) r.h = Math.max(12, captionY - 2 - r.y);
+    if (r.y + r.h > captionY) r.h = Math.max(12, captionY - r.y);
   }
   // Shrink from the top/bottom if body (non-annotation, non-caption) lines sit inside.
   const offenders = (bodyLines || []).filter((l) => isBodyishLine(l) && lineInsideRegion(l, r, 0));
@@ -1187,7 +1193,7 @@ async function renderPageRegion(page, viewport, rect, scale, maskBoxes) {
   const full = document.createElement("canvas");
   full.width = Math.ceil(vp.width);
   full.height = Math.ceil(vp.height);
-  const ctx = full.getContext("2d");
+  const ctx = full.getContext("2d", { willReadFrequently: true });
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, full.width, full.height);
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
@@ -1197,19 +1203,167 @@ async function renderPageRegion(page, viewport, rect, scale, maskBoxes) {
       ctx.fillRect(b.x * s, b.y * s, b.w * s, b.h * s);
     }
   }
-  const x = Math.max(0, Math.floor(rect.x * s) - 4);
-  const y = Math.max(0, Math.floor(rect.y * s) - 4);
-  const w = Math.min(full.width - x, Math.ceil(rect.w * s) + 8);
-  const h = Math.min(full.height - y, Math.ceil(rect.h * s) + 8);
+  const padL = rect.padLeft != null ? rect.padLeft : 4;
+  const padT = rect.padTop != null ? rect.padTop : 4;
+  const padR = rect.padRight != null ? rect.padRight : 4;
+  const padB = rect.padBottom != null ? rect.padBottom : 4;
+  const x = Math.max(0, Math.floor(rect.x * s) - padL);
+  const y = Math.max(0, Math.floor(rect.y * s) - padT);
+  const w = Math.min(full.width - x, Math.ceil(rect.w * s) + padL + padR);
+  const h = Math.min(full.height - y, Math.ceil(rect.h * s) + padT + padB);
   if (w < 8 || h < 8) return null;
   const crop = document.createElement("canvas");
   crop.width = w;
   crop.height = h;
-  const cctx = crop.getContext("2d");
+  const cctx = crop.getContext("2d", { willReadFrequently: true });
   cctx.fillStyle = "#fff";
   cctx.fillRect(0, 0, w, h);
   cctx.drawImage(full, x, y, w, h, 0, 0, w, h);
+  rescueBarLabels(crop, rect, s, x, y);
   return trimDarkBars(crop).toDataURL("image/jpeg", 0.92);
+}
+
+function dimLabelsNearRect(lines, rect) {
+  if (!rect) return [];
+  const seen = new Set();
+  const out = [];
+  for (const l of lines || []) {
+    const text = tidyText(l.text);
+    if (!text || looksLikeCaption(text) || isBodyishLine(l)) continue;
+    if (!(isDimVocab(text) || isFigureLabel(text))) continue;
+    const mid = (l.x + (l.x2 || l.x + (l.width || 0))) / 2;
+    if (mid < rect.x - 8 || mid > rect.x + rect.w + 8) continue;
+    const fs = l.fontSize || 10;
+    const top = l.y - fs * 1.15;
+    const bot = l.y + fs * 0.4;
+    const nearBottom = bot > rect.y + rect.h - 36 && top < rect.y + rect.h + 16;
+    const nearTop = top < rect.y + 36 && bot > rect.y - 16;
+    if (!nearBottom && !nearTop) continue;
+    const key = `${text}|${Math.round(l.x)}|${Math.round(l.y)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      text,
+      x: l.x,
+      y: l.y,
+      w: Math.max(8, (l.x2 || (l.x + (l.width || fs * text.length * 0.9))) - l.x),
+      fontSize: fs,
+    });
+  }
+  return out;
+}
+
+// If a caption/footer bar overprints dimension labels (black text on a black
+// bar), paint a panel-coloured band across those rows and redraw the labels
+// so trimDarkBars can keep the glyphs instead of cutting them in half.
+function rescueBarLabels(canvas, rect, scale, originX, originY) {
+  const labels = rect && rect.labels;
+  if (!labels || !labels.length) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 8 || h < 16) return;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const isBarRow = (row) => {
+    const lums = [];
+    const off = row * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = off + x * 4;
+      lums.push(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+    }
+    lums.sort((a, b) => a - b);
+    return lums[Math.floor(lums.length / 2)] < 85;
+  };
+  let barTop = h;
+  let y1 = h;
+  while (y1 > 8 && isBarRow(y1 - 1)) y1--;
+  if (y1 === h) return;
+  barTop = y1;
+  const hits = [];
+  for (const lab of labels) {
+    const lx = lab.x * scale - originX;
+    const ly = lab.y * scale - originY;
+    const fs = (lab.fontSize || 10) * scale;
+    const top = ly - fs * 1.05;
+    const bot = ly + fs * 0.4;
+    if (bot < barTop - 3) continue;
+    if (ly < -fs || ly > h + fs) continue;
+    if (lx > w + 4 || lx + (lab.w || fs) * 1.1 < -4) continue;
+    hits.push({ text: lab.text, lx, ly, fs, bot });
+  }
+  if (!hits.length) return;
+  const fontSpec = (fs) => `${fs}px "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", "Droid Sans Fallback", sans-serif`;
+  ctx.font = fontSpec(hits[0].fs);
+  const sample = hits[0].text || "英寸";
+  if (!ctx.measureText(sample).width || ctx.measureText(sample).width < hits[0].fs * 0.7) return;
+  // Panel colour from a few rows above the bar (skip sparse ink).
+  const sampleRow = Math.max(0, barTop - 8);
+  const rs = [], gs = [], bs = [];
+  const off = sampleRow * w * 4;
+  for (let x = 0; x < w; x++) {
+    const i = off + x * 4;
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    if (lum > 140) { rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]); }
+  }
+  const mid = (arr, fallback) => {
+    if (!arr.length) return fallback;
+    const s = arr.slice().sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+  const pr = mid(rs, 222), pg = mid(gs, 223), pb = mid(bs, 224);
+  const yEnd = Math.min(h, Math.max(...hits.map((x) => Math.ceil(x.bot + 3))));
+  if (yEnd <= barTop) return;
+  ctx.fillStyle = `rgb(${pr},${pg},${pb})`;
+  ctx.fillRect(0, barTop, w, yEnd - barTop);
+  ctx.fillStyle = "#111";
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+  for (const lab of hits) {
+    ctx.font = fontSpec(lab.fs);
+    if (ctx.measureText(lab.text).width < lab.fs * 0.7) continue;
+    ctx.fillText(lab.text, lab.lx, lab.ly);
+  }
+}
+
+// After a cross-page stitch, a page-number box remnant can sit at the seam
+// on the far left or right. Paint those short ticks with neighbouring pixels.
+function trimSeamSlivers(canvas, seamY) {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 16 || h < 16 || seamY == null) return canvas;
+  if (seamY < 4 || seamY > h - 4) return canvas;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h);
+  const pix = data.data;
+  const lumAt = (x, y) => {
+    const i = (y * w + x) * 4;
+    return 0.299 * pix[i] + 0.587 * pix[i + 1] + 0.114 * pix[i + 2];
+  };
+  const y0 = Math.max(0, Math.floor(seamY) - 8);
+  const y1 = Math.min(h, Math.ceil(seamY) + 8);
+  const maxTrim = Math.min(100, Math.floor(w * 0.12));
+  const paintCol = (x) => {
+    let darkSeam = 0, darkElse = 0;
+    for (let y = 0; y < h; y++) {
+      if (lumAt(x, y) < 80) {
+        if (y >= y0 && y < y1) darkSeam++;
+        else darkElse++;
+      }
+    }
+    if (darkSeam < 2 || darkElse / Math.max(1, h - (y1 - y0)) > 0.05) return false;
+    for (let y = y0; y < y1; y++) {
+      if (lumAt(x, y) >= 80) continue;
+      const srcY = (y > seamY) ? Math.min(h - 1, y1 + 1) : Math.max(0, y0 - 1);
+      const si = (srcY * w + x) * 4;
+      const di = (y * w + x) * 4;
+      pix[di] = pix[si]; pix[di + 1] = pix[si + 1]; pix[di + 2] = pix[si + 2];
+    }
+    return true;
+  };
+  for (let x = 0; x < maxTrim; x++) paintCol(x);
+  for (let x = w - 1; x >= w - maxTrim; x--) paintCol(x);
+  ctx.putImageData(data, 0, 0);
+  return canvas;
 }
 
 // Cut solid dark header/footer/caption bars out of a crop (do not paint over them).
@@ -1217,7 +1371,7 @@ function trimDarkBars(canvas) {
   const w = canvas.width;
   const h = canvas.height;
   if (w < 8 || h < 16) return canvas;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const data = ctx.getImageData(0, 0, w, h).data;
   const rowStats = (row) => {
     let dark70 = 0;
@@ -1236,17 +1390,118 @@ function trimDarkBars(canvas) {
   };
   const isBar = (row) => {
     const s = rowStats(row);
-    return s.med < 90 || s.d70 > 0.45 || s.d100 > 0.55;
+    // Require a dark median so labels on a grey panel (「英寸」just
+    // above a caption bar) are not treated as part of the bar.
+    return s.med < 85;
   };
   let y0 = 0;
   let y1 = h;
   while (y0 < h - 8 && isBar(y0)) y0++;
   while (y1 > y0 + 8 && isBar(y1 - 1)) y1--;
+  let out = canvas;
+  if (y0 !== 0 || y1 !== h) {
+    out = document.createElement("canvas");
+    out.width = w;
+    out.height = y1 - y0;
+    out.getContext("2d").drawImage(canvas, 0, y0, w, y1 - y0, 0, 0, w, y1 - y0);
+  }
+  return trimEdgeSlivers(trimFlatEdgeBands(out));
+}
+
+// Tight-crop empty white margins and thin uniform mid-grey footer/header
+// strips (darker than the drawing panel, too light to count as a black bar).
+function trimFlatEdgeBands(canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 16 || h < 24) return canvas;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const stats = (row) => {
+    const lums = [];
+    let dark = 0;
+    const off = row * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = off + x * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      lums.push(lum);
+      if (lum < 70) dark++;
+    }
+    lums.sort((a, b) => a - b);
+    const med = lums[Math.floor(lums.length / 2)];
+    let varSum = 0;
+    for (const l of lums) varSum += (l - med) * (l - med);
+    return { med, sd: Math.sqrt(varSum / lums.length), dark: dark / w };
+  };
+  const midRows = [];
+  for (let y = Math.floor(h * 0.3); y < Math.floor(h * 0.7); y++) midRows.push(stats(y).med);
+  midRows.sort((a, b) => a - b);
+  const interior = midRows[Math.floor(midRows.length / 2)] || 220;
+  const isMargin = (row) => {
+    const s = stats(row);
+    if (s.dark > 0.02) return false;
+    const nearWhite = s.med > 248 && s.sd < 10;
+    const greyStrip = s.med < interior - 22 && s.med > 90 && s.sd < 16;
+    return nearWhite || greyStrip;
+  };
+  let y0 = 0, y1 = h;
+  const maxTrim = Math.min(Math.floor(h * 0.18), Math.max(8, Math.floor(h * 0.12)));
+  while (y0 < maxTrim && isMargin(y0)) y0++;
+  while (h - y1 < maxTrim && y1 > y0 + 16 && isMargin(y1 - 1)) y1--;
   if (y0 === 0 && y1 === h) return canvas;
   const out = document.createElement("canvas");
   out.width = w;
   out.height = y1 - y0;
   out.getContext("2d").drawImage(canvas, 0, y0, w, y1 - y0, 0, 0, w, y1 - y0);
+  return out;
+}
+
+// Thin dark footer/page-number slivers on the left or right edge only
+// (a short blob at the top or bottom, not a full-height drawing stroke).
+function trimEdgeSlivers(canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 16 || h < 16) return canvas;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const lumAt = (x, y) => {
+    const i = (y * w + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  };
+  const band = Math.max(8, Math.floor(h * 0.22));
+  const isSliverCol = (x) => {
+    let darkBot = 0, darkTop = 0, darkMid = 0;
+    for (let y = 0; y < h; y++) {
+      if (lumAt(x, y) < 70) {
+        if (y < band) darkTop++;
+        else if (y >= h - band) darkBot++;
+        else darkMid++;
+      }
+    }
+    const midH = Math.max(1, h - 2 * band);
+    let darkLast = 0;
+    for (let y = h - 1; y >= Math.max(0, h - 20); y--) {
+      const i = (y * w + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 80) darkLast++;
+    }
+    let darkFirst = 0;
+    for (let y = 0; y < Math.min(h, 20); y++) {
+      const i = (y * w + x) * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (lum < 80) darkFirst++;
+    }
+    const thinEnd = (darkLast >= 2 || darkFirst >= 2) && darkMid / midH < 0.05;
+    return thinEnd || ((darkBot / band > 0.25 || darkTop / band > 0.25) && darkMid / midH < 0.06);
+  };
+  let x0 = 0, x1 = w;
+  const maxTrim = Math.min(100, Math.floor(w * 0.12));
+  while (x0 < maxTrim && isSliverCol(x0)) x0++;
+  while (w - x1 < maxTrim && isSliverCol(x1 - 1)) x1--;
+  if (x0 === 0 && x1 === w) return canvas;
+  const out = document.createElement("canvas");
+  out.width = x1 - x0;
+  out.height = h;
+  out.getContext("2d").drawImage(canvas, x0, 0, x1 - x0, h, 0, 0, x1 - x0, h);
   return out;
 }
 
@@ -1480,9 +1735,34 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
         u.x = nx;
       }
     }
-    const bars = captionBandRects(info.p.vectorRects, cap);
-    let bottom = cap.y - 3;
-    for (const b of bars) bottom = Math.min(bottom, b.y - 1);
+    const labelLines = [...(info.p.lines || []), ...(info.cleaned || [])];
+    const inCapCol = (l) => {
+      if (info.layout.mode !== "double" || capCol === "full") return true;
+      const mid = (l.x + (l.x2 || l.x)) / 2;
+      return capCol === "left" ? mid < info.layout.gutter : mid >= info.layout.gutter;
+    };
+    // Include a little of the caption bar so labels that sit just above (or
+    // slightly overlap) it stay in the crop; trimDarkBars + rescueBarLabels
+    // then drop the bar without eating the glyphs.
+    let bottom = cap.y + 4;
+    for (const l of labelLines) {
+      const tx = tidyText(l.text);
+      if (!tx || looksLikeCaption(tx) || isBodyishLine(l) || !inCapCol(l)) continue;
+      const ly2 = l.y + (l.fontSize || 10) * 0.45;
+      if (l.y < cap.y + 2 && ly2 > bottom - 8 && l.y > cap.y - 48) {
+        bottom = Math.max(bottom, Math.min(cap.y + 8, ly2 + 3));
+      }
+    }
+    // Grow upward so top dimension labels (「6英寸」「5英尺」「3英寸」) stay in the crop.
+    const oldBottom = u.y + u.h;
+    for (const l of labelLines) {
+      const tx = tidyText(l.text);
+      if (!tx || looksLikeCaption(tx) || isBodyishLine(l) || !inCapCol(l)) continue;
+      if (!(isDimVocab(tx) || isFigureLabel(tx) || tx.length <= 8)) continue;
+      if (l.y >= u.y || u.y - l.y > 42) continue;
+      u.y = Math.min(u.y, Math.max(0, l.y - 4));
+      u.h = oldBottom - u.y;
+    }
     u = tightenRegion(u, info.cleaned, bottom);
     if (u.y + u.h > bottom) u.h = Math.max(8, bottom - u.y);
     u = clipToBand(u, info.band);
@@ -1493,7 +1773,11 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
       parts.sort((a, b) => Math.abs(cap.y - (a.y + a.h)) - Math.abs(cap.y - (b.y + b.h)));
       u = parts[0];
     }
-    return u.h >= 20 && u.w >= 20 ? u : null;
+    if (u.h >= 20 && u.w >= 20) {
+      u.labels = dimLabelsNearRect(labelLines, u);
+      return u;
+    }
+    return null;
   };
 
   for (let i = 0; i < analyzed.length; i++) {
@@ -1540,6 +1824,12 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
           hereRect.y = top;
         }
         hereRect = clipToBand(hereRect, info.band) || hereRect;
+        // Already clipped to the content band: do not pad into the header/footer
+        // page-number boxes, which otherwise become a dark sliver at the seam.
+        prevRegion = { ...prevRegion, padBottom: 0 };
+        hereRect = { ...hereRect, padTop: 0 };
+        prevRegion.labels = dimLabelsNearRect([...(prev.p.lines || []), ...(prev.cleaned || [])], prevRegion);
+        hereRect.labels = dimLabelsNearRect([...(info.p.lines || []), ...(info.cleaned || [])], hereRect);
         jobs.push({
           type: "stitch",
           cap,
@@ -1658,18 +1948,54 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
       img.onerror = reject;
       img.src = url;
     });
-    const ia = await load(urlA);
-    const ib = await load(urlB);
+    const toCanvas = (img) => {
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      c.getContext("2d").drawImage(img, 0, 0);
+      return c;
+    };
+    const extraIsSliver = (canvas, keepW) => {
+      if (canvas.width <= keepW + 2) return true;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const w = canvas.width, h = canvas.height;
+      const data = ctx.getImageData(keepW, 0, w - keepW, h).data;
+      const ew = w - keepW;
+      let dark = 0, mid = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (lum < 80) dark++;
+        else if (lum > 140 && lum < 245) mid++;
+      }
+      const n = ew * h;
+      // Extra strip is a page-number remnant (mostly white/black) rather than drawing.
+      return mid / n < 0.15;
+    };
+    let ia = toCanvas(await load(urlA));
+    let ib = toCanvas(await load(urlB));
+    const shared = Math.min(ia.width, ib.width);
+    if (ia.width > shared && extraIsSliver(ia, shared)) {
+      const c = document.createElement("canvas");
+      c.width = shared; c.height = ia.height;
+      c.getContext("2d").drawImage(ia, 0, 0, shared, ia.height, 0, 0, shared, ia.height);
+      ia = c;
+    }
+    if (ib.width > shared && extraIsSliver(ib, shared)) {
+      const c = document.createElement("canvas");
+      c.width = shared; c.height = ib.height;
+      c.getContext("2d").drawImage(ib, 0, 0, shared, ib.height, 0, 0, shared, ib.height);
+      ib = c;
+    }
     const w = Math.max(ia.width, ib.width);
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = ia.height + ib.height;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(ia, 0, 0);
     ctx.drawImage(ib, 0, ia.height);
-    return urlFromCanvas(canvas);
+    return urlFromCanvas(trimSeamSlivers(canvas, ia.height));
   }
 
   for (const job of jobs) {

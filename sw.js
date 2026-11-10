@@ -1,4 +1,4 @@
-const CACHE = "paper-reader-v5";
+const CACHE = "paper-reader-v6";
 const NETWORK_MS = 3000;
 const REVALIDATE_MS = 8000;
 
