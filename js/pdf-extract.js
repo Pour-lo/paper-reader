@@ -322,27 +322,86 @@ function isWatermarkText(s) {
   return /deepl|translated\s+by\s+deepl|subscribe to deepl|www\.deepl\.com/i.test(String(s || ""));
 }
 
-function annotationClusters(lines, bodySize, pageWidth) {
+function isFigureLabel(t) {
+  const s = tidyText(t);
+  if (!s || looksLikeCaption(s)) return false;
+  if (/然而|尽管|工程师|因此|采用了|主要得益|一种|设计了|发现在|首次生产/.test(s)) return false;
+  if (s.length > 56) return false;
+  if (s.length > 28 && /[，。]/.test(s) && !/跨度最大|间距为|^平板|^槽钢|^槽形梁|^肋条|^桁条/.test(s)) return false;
+  const dimish = isDimVocab(s) || /跨度最大|间距为|平板，|槽钢，|槽形梁|肋条|桁条/.test(s);
+  if (!dimish) return false;
+  return /跨度|间距|英尺|英寸|毫米|截面|平板|槽钢|肋条|桁条/.test(s) || (isDimVocab(s) && s.length <= 40);
+}
+
+function isLongBodyLine(l) {
+  const t = tidyText(l && l.text);
+  if (!t || looksLikeCaption(t) || isFigureLabel(t)) return false;
+  const prose = t.length >= 16 && (/[，。；、]/.test(t) || t.length > 28 || /设计|采用|其中|然而|因此|一种|进行/.test(t));
+  if (prose) return true;
+  if (isDimVocab(t) && t.length <= 40) return false;
+  return t.length >= 16;
+}
+
+function isBodyishLine(l) {
+  if (isLongBodyLine(l)) return true;
+  const t = tidyText(l && l.text);
+  if (!t || looksLikeCaption(t) || isFigureLabel(t)) return false;
+  if (isDimVocab(t) && t.length <= 24) return false;
+  return /[一-鿿]/.test(t) && t.length >= 6 && /[，。；、]/.test(t);
+}
+
+function isLongBodyBetween(lines, y0, y1, col, layout, pageWidth) {
+  const lo = Math.min(y0, y1);
+  const hi = Math.max(y0, y1);
+  return (lines || []).some((l) => {
+    if (l.y <= lo + 4 || l.y >= hi - 4) return false;
+    if (col && col !== "full" && layout && layout.mode === "double") {
+      const lc = lineColumn(l, layout, pageWidth);
+      if (lc !== col && lc !== "full") return false;
+    }
+    return isLongBodyLine(l);
+  });
+}
+
+function bodyBetweenRects(a, b, lines) {
+  const a2 = a.y + a.h;
+  const b2 = b.y + b.h;
+  const lo = Math.min(a2, b2);
+  const hi = Math.max(a.y, b.y);
+  if (hi <= lo + 8) return false;
+  return (lines || []).some((l) => l.y >= lo - 2 && l.y <= hi + 2 && isLongBodyLine(l));
+}
+
+function annotationClusters(lines, bodySize, pageWidth, layout) {
+  const colOf = (l) => lineColumn(l, layout || { mode: "single" }, pageWidth);
   const cands = [];
   for (const l of lines) {
     const t = tidyText(l.text);
     if (!t || looksLikeCaption(t) || looksLikeHeading(t, l.fontSize, bodySize)) continue;
-    const dim = isDimVocab(t) && t.length <= 40;
-    const short = t.length <= 12;
+    if (isBodyishLine(l) || isLongBodyLine(l)) continue;
+    const dim = isFigureLabel(t) || (isDimVocab(t) && t.length <= 24);
+    const short = t.length <= 12 && !/[，。]/.test(t);
     if (dim || short) cands.push({ line: l, dim, short, t });
   }
-  cands.sort((a, b) => a.line.y - b.line.y);
+  cands.sort((a, b) => a.line.y - b.line.y || a.line.x - b.line.x);
   const groups = [];
   let g = [];
   for (const c of cands) {
-    if (!g.length || c.line.y - g[g.length - 1].line.y < 40) g.push(c);
+    const prev = g[g.length - 1];
+    const col = colOf(c.line);
+    const prevCol = prev ? colOf(prev.line) : col;
+    const colOk = !prev || col === "full" || prevCol === "full" || col === prevCol;
+    const closeY = !prev || c.line.y - prev.line.y < 36;
+    const bodyGap = prev && isLongBodyBetween(lines, prev.line.y, c.line.y, col, layout, pageWidth);
+    if (!g.length || (closeY && colOk && !bodyGap)) g.push(c);
     else { groups.push(g); g = [c]; }
   }
   if (g.length) groups.push(g);
 
   const regions = [];
   const marked = new Set();
-  for (const grp of groups) {
+  const accept = (grp) => {
+    if (!grp.length) return;
     const dimN = grp.filter((c) => c.dim).length;
     const xs = grp.map((c) => c.line.x);
     const xSpread = Math.max(...xs) - Math.min(...xs);
@@ -350,12 +409,24 @@ function annotationClusters(lines, bodySize, pageWidth) {
     const enough = dimN >= 2
       || (dimN >= 1 && grp.length >= 3 && irregular)
       || (grp.length >= 5 && irregular);
-    if (!enough) continue;
+    if (!enough) return;
     const boxes = grp.map((c) => lineRect(c.line));
     let rect = boxes[0];
     for (let i = 1; i < boxes.length; i++) rect = rectUnion(rect, boxes[i]);
     regions.push(inflate(rect, 8));
     grp.forEach((c) => marked.add(c.line));
+  };
+  for (const grp of groups) {
+    if (layout && layout.mode === "double") {
+      const left = grp.filter((c) => colOf(c.line) === "left");
+      const right = grp.filter((c) => colOf(c.line) === "right");
+      const full = grp.filter((c) => colOf(c.line) === "full");
+      if (left.length) accept(left.concat(full));
+      if (right.length) accept(right);
+      if (!left.length && !right.length) accept(full.length ? full : grp);
+    } else {
+      accept(grp);
+    }
   }
   return { regions, lines: marked };
 }
@@ -368,26 +439,28 @@ function lineInsideRegion(line, region, pad = 2) {
 }
 
 function isTextFrame(rect, lines) {
-  const inside = (lines || []).filter((l) => lineInsideRegion(l, rect, 0));
-  if (inside.length < 3) return false;
-  const long = inside.filter((l) => {
-    const t = tidyText(l.text);
-    return t.length >= 10 && !isDimVocab(t) && !looksLikeCaption(t);
+  const inside = (lines || []).filter((l) => lineInsideRegion(l, rect, 2));
+  if (inside.length < 2) return false;
+  const textish = inside.filter((l) => {
+    const tx = tidyText(l.text);
+    if (!tx || looksLikeCaption(tx)) return false;
+    if (isDimVocab(tx) && tx.length <= 20 && !/[，。；]/.test(tx)) return false;
+    return tx.length >= 6;
   });
-  if (long.length < 3) return false;
+  if (textish.length < 3) return false;
   const ys = inside.map((l) => l.y);
   const span = Math.max(...ys) - Math.min(...ys) + 12;
-  return span > rect.h * 0.4 && long.length >= 4;
+  return span > rect.h * 0.3 && textish.length >= 3;
 }
 
 function regionBodyStats(lines, rect) {
   const inside = (lines || []).filter((l) => lineInsideRegion(l, rect, 2));
   const texts = inside.map((l) => tidyText(l.text)).filter(Boolean);
-  const longBody = texts.filter((t) => t.length >= 16 && !isDimVocab(t) && !looksLikeCaption(t));
+  const longBody = inside.filter((l) => isBodyishLine(l));
   return { n: texts.length, longBody: longBody.length, chars: texts.join("").length };
 }
 
-function clusterRectsLimited(rects, gap, pageHeight, lines) {
+function clusterRectsLimited(rects, gap, pageHeight, lines, pageWidth, layout) {
   const items = rects.map((r) => ({ ...r }));
   let changed = true;
   while (changed) {
@@ -399,9 +472,17 @@ function clusterRectsLimited(rects, gap, pageHeight, lines) {
         u.kind = items[i].kind || items[j].kind;
         if (items[i].src && !u.src) u.src = items[i].src;
         if (items[j].src && !u.src) u.src = items[j].src;
-        // Refuse merges that swallow a whole page or a text column.
         if (u.h > pageHeight * 0.72 && u.h > Math.max(items[i].h, items[j].h) * 1.35) continue;
         if (lines && isTextFrame(u, lines) && !isTextFrame(items[i], lines) && !isTextFrame(items[j], lines)) continue;
+        if (layout && layout.mode === "double" && pageWidth) {
+          const wide = (r) => r.w > pageWidth * 0.55;
+          if (!wide(items[i]) && !wide(items[j])) {
+            const midI = items[i].x + items[i].w / 2;
+            const midJ = items[j].x + items[j].w / 2;
+            if ((midI < layout.gutter) !== (midJ < layout.gutter)) continue;
+          }
+        }
+        if (lines && bodyBetweenRects(items[i], items[j], lines)) continue;
         items[i] = u;
         items.splice(j, 1);
         changed = true;
@@ -413,7 +494,88 @@ function clusterRectsLimited(rects, gap, pageHeight, lines) {
   return items;
 }
 
-function mergeFigureMaterials(rasters, drawings, annRegions, pageWidth, pageHeight, lines) {
+function splitRegionByGutter(r, layout, pageWidth) {
+  if (!r || !layout || layout.mode !== "double") return [r];
+  // Never slice a raster photo, or a region already narrower than both columns.
+  if (r.kind === "raster" || r.w < pageWidth * 0.55) return [r];
+  const g = layout.gutter;
+  if (r.x < g - 20 && r.x + r.w > g + 20) {
+    return [
+      { ...r, w: g - 4 - r.x },
+      { ...r, x: g + 4, w: r.x + r.w - (g + 4) },
+    ].filter((x) => x.w >= 24 && x.h >= 16);
+  }
+  return [r];
+}
+
+function splitRegionByBody(r, lines) {
+  const bodies = (lines || []).filter((l) => isBodyishLine(l) && lineInsideRegion(l, r, 0));
+  if (!bodies.length) return [r];
+  const ivals = bodies
+    .map((l) => ({ y0: l.y - 2, y1: l.y + (l.fontSize || 10) * 1.55 }))
+    .sort((a, b) => a.y0 - b.y0);
+  const merged = [];
+  for (const iv of ivals) {
+    if (!merged.length || iv.y0 > merged[merged.length - 1].y1 + 8) merged.push({ ...iv });
+    else merged[merged.length - 1].y1 = Math.max(merged[merged.length - 1].y1, iv.y1);
+  }
+  const parts = [];
+  let cursor = r.y;
+  for (const iv of merged) {
+    if (iv.y0 - cursor >= 18) parts.push({ ...r, y: cursor, h: iv.y0 - cursor });
+    cursor = Math.max(cursor, iv.y1);
+  }
+  if (r.y + r.h - cursor >= 18) parts.push({ ...r, y: cursor, h: r.y + r.h - cursor });
+  return parts.filter((p) => p.w >= 24 && p.h >= 16);
+}
+
+function splitRegionByCaptions(r, lines) {
+  const caps = (lines || []).filter((l) => {
+    if (!looksLikeCaption(l.text)) return false;
+    return l.y > r.y + 10 && l.y < r.y + r.h - 4;
+  }).sort((a, b) => a.y - b.y);
+  if (!caps.length) return [r];
+  const parts = [];
+  let cursor = r.y;
+  for (const cap of caps) {
+    const cut = cap.y - 2;
+    if (cut - cursor >= 18) parts.push({ ...r, y: cursor, h: cut - cursor });
+    cursor = Math.max(cursor, cap.y + (cap.fontSize || 10) * 1.6);
+  }
+  if (r.y + r.h - cursor >= 18) parts.push({ ...r, y: cursor, h: r.y + r.h - cursor });
+  return parts.filter((p) => p.w >= 24 && p.h >= 16);
+}
+
+function contentBand(lines, pageHeight, pageWidth, dropSet, vectorRects) {
+  let headerBottom = 0;
+  let footerTop = pageHeight;
+  for (const l of lines || []) {
+    const t = tidyText(l.text);
+    const h = (l.fontSize || 10) * 1.55;
+    const footish = dropSet.has(normalizeHeader(l.text)) || PAGE_NUM_RE.test(t) || isRunningJournalLine(t);
+    if (!footish) continue;
+    if (l.y < pageHeight * 0.08) headerBottom = Math.max(headerBottom, l.y + h);
+    if (l.y > pageHeight * 0.86) footerTop = Math.min(footerTop, l.y - 16);
+  }
+  for (const v of vectorRects || []) {
+    if (v.y <= pageHeight * 0.02 && v.h < 36 && v.w > pageWidth * 0.4) {
+      headerBottom = Math.max(headerBottom, v.y + v.h);
+    }
+  }
+  headerBottom = Math.min(headerBottom, pageHeight * 0.14);
+  footerTop = Math.max(footerTop, pageHeight * 0.86);
+  return { headerBottom, footerTop };
+}
+
+function clipToBand(rect, band) {
+  if (!rect || !band) return rect || null;
+  const y = Math.max(rect.y, band.headerBottom || 0);
+  const y2 = Math.min(rect.y + rect.h, band.footerTop != null ? band.footerTop : rect.y + rect.h);
+  if (y2 - y < 12) return null;
+  return { ...rect, y, h: y2 - y };
+}
+
+function mergeFigureMaterials(rasters, drawings, annRegions, pageWidth, pageHeight, lines, layout) {
   const raw = [];
   for (const f of rasters || []) {
     if (f.y + (f.h || 0) < pageHeight * 0.1 && (f.h || 0) < pageHeight * 0.12) continue;
@@ -431,7 +593,7 @@ function mergeFigureMaterials(rasters, drawings, annRegions, pageWidth, pageHeig
     if (panel || drawing) raw.push({ ...d, kind: panel && d.h < pageHeight * 0.45 ? "panel" : "draw" });
   }
   for (const a of annRegions || []) raw.push({ ...a, kind: "ann" });
-  return clusterRectsLimited(raw, 22, pageHeight, lines)
+  return clusterRectsLimited(raw, 22, pageHeight, lines, pageWidth, layout)
     .filter((r) => r.w >= 24 && r.h >= 16 && r.h < pageHeight * 0.85)
     .filter((r) => r.kind === "raster" || r.kind === "ann" || !isTextFrame(r, lines));
 }
@@ -442,12 +604,7 @@ function tightenRegion(rect, bodyLines, captionY) {
     if (r.y + r.h > captionY - 2) r.h = Math.max(12, captionY - 2 - r.y);
   }
   // Shrink from the top/bottom if body (non-annotation, non-caption) lines sit inside.
-  const offenders = (bodyLines || []).filter((l) => {
-    const t = tidyText(l.text);
-    if (!t || looksLikeCaption(t) || isDimVocab(t) && t.length <= 40) return false;
-    if (t.length <= 4) return false;
-    return lineInsideRegion(l, r, 0);
-  });
+  const offenders = (bodyLines || []).filter((l) => isBodyishLine(l) && lineInsideRegion(l, r, 0));
   if (offenders.length) {
     const tops = offenders.filter((l) => l.y < r.y + r.h * 0.4);
     const bottoms = offenders.filter((l) => l.y > r.y + r.h * 0.6);
@@ -557,7 +714,7 @@ function finishLine(items) {
   };
 }
 
-function splitByGutter(items, pageWidth) {
+function splitByGutter(items, pageWidth, gutter) {
   if (!items.length) return [];
   const sorted = items.slice().sort((a, b) => a.x - b.x);
   const clusters = [];
@@ -565,9 +722,18 @@ function splitByGutter(items, pageWidth) {
   for (let i = 1; i < sorted.length; i++) {
     const prev = sorted[i - 1];
     const it = sorted[i];
-    const gap = it.x - (prev.x + prev.width);
+    const prevRight = prev.x + (prev.width || 0);
+    const gap = it.x - prevRight;
     const em = Math.max(prev.fontSize, it.fontSize, 1);
-    if (gap > Math.max((pageWidth || 600) * 0.055, em * 2.3)) {
+    const acrossKnown = typeof gutter === "number"
+      && prevRight <= gutter + 2
+      && it.x >= gutter - 2
+      && !(prev.x < pageWidth * 0.15 && it.x + (it.width || 0) > pageWidth * 0.8);
+    const midPageGap = it.x > pageWidth * 0.42 && prevRight < pageWidth * 0.58;
+    const thresh = midPageGap
+      ? Math.max(pageWidth * 0.022, em * 1.35)
+      : Math.max(pageWidth * 0.06, em * 2.5);
+    if (acrossKnown || gap > thresh) {
       clusters.push(cur);
       cur = [it];
     } else {
@@ -578,7 +744,7 @@ function splitByGutter(items, pageWidth) {
   return clusters;
 }
 
-function groupLines(items, pageWidth) {
+function groupLines(items, pageWidth, gutter) {
   if (!items.length) return [];
   const sorted = items.slice().sort((a, b) => a.y - b.y || a.x - b.x);
   const rows = [];
@@ -595,7 +761,7 @@ function groupLines(items, pageWidth) {
   }
   const lines = [];
   for (const row of rows) {
-    for (const cluster of splitByGutter(row.items, pageWidth)) {
+    for (const cluster of splitByGutter(row.items, pageWidth, gutter)) {
       const line = finishLine(cluster);
       if (line.text) lines.push(line);
     }
@@ -604,7 +770,13 @@ function groupLines(items, pageWidth) {
 }
 
 function detectColumns(lines, pageWidth) {
-  const body = lines.filter((l) => l.text.length >= 2);
+  const body = lines.filter((l) => {
+    const tx = tidyText(l.text);
+    const w = (l.x2 || l.x) - l.x;
+    if (tx.length < 8 || w <= 20 || w >= pageWidth * 0.5) return false;
+    if (isFigureLabel(tx) || (isDimVocab(tx) && tx.length <= 24)) return false;
+    return true;
+  });
   if (body.length < 8) return { mode: "single", gutter: pageWidth / 2 };
 
   const mids = body.map((l) => (l.x + l.x2) / 2).sort((a, b) => a - b);
@@ -613,7 +785,6 @@ function detectColumns(lines, pageWidth) {
   const span = maxX - minX;
   if (span < pageWidth * 0.45) return { mode: "single", gutter: pageWidth / 2 };
 
-  // Find the largest gap between midpoints in the middle half of the page.
   let bestGap = 0;
   let gutter = pageWidth / 2;
   for (let i = 1; i < mids.length; i++) {
@@ -622,6 +793,21 @@ function detectColumns(lines, pageWidth) {
     if (mid > pageWidth * 0.32 && mid < pageWidth * 0.68 && gap > bestGap) {
       bestGap = gap;
       gutter = mid;
+    }
+  }
+
+  const leftish = body.filter((l) => (l.x + l.x2) / 2 < pageWidth * 0.48);
+  const rightish = body.filter((l) => (l.x + l.x2) / 2 > pageWidth * 0.52);
+  if (leftish.length >= 3 && rightish.length >= 3) {
+    const xs = (arr, q) => {
+      const s = arr.slice().sort((a, b) => a - b);
+      return s[Math.max(0, Math.min(s.length - 1, Math.floor(q * (s.length - 1))))];
+    };
+    const l2 = xs(leftish.map((l) => l.x2), 0.85);
+    const r0 = xs(rightish.map((l) => l.x), 0.15);
+    if (r0 - l2 > pageWidth * 0.03) {
+      gutter = (l2 + r0) / 2;
+      bestGap = Math.max(bestGap, r0 - l2);
     }
   }
 
@@ -734,19 +920,41 @@ function linesToParagraphs(lines, pageWidth, bodySize) {
     const isCap = looksLikeCaption(text);
     const shortLine = (line.x2 - line.x) < pageWidth * (line.column === "full" ? 0.72 : 0.38)
       && text.length < 90;
-    // A line is "short" if it doesn't reach near the right edge of its column.
     let colRight = pageWidth * 0.92;
     if (line.column === "left") colRight = pageWidth * 0.48;
     if (line.column === "right") colRight = pageWidth * 0.96;
     const reachesEdge = line.x2 >= colRight - line.fontSize * 1.2;
     const gap = next ? next.y - line.y : 999;
     const paraGap = line.fontSize * 1.55;
-    const colChange = next && line.column !== "full" && next.column !== line.column && next.column !== "full";
+    const colChange = next && line.column && next.column
+      && line.column !== "full" && next.column !== line.column && next.column !== "full";
 
-    if (isHead || isCap) {
+    if (isCap) {
+      pushBuf();
+      let capText = text;
+      let last = line;
+      while (i + 1 < lines.length) {
+        const n = lines[i + 1];
+        const nt = tidyText(n.text);
+        if (!nt || looksLikeCaption(nt) || looksLikeHeading(nt, n.fontSize, bodySize)) break;
+        const nCol = n.column || "full";
+        const cCol = last.column || "full";
+        if (nCol !== "full" && cCol !== "full" && nCol !== cCol) break;
+        if (n.y - last.y > last.fontSize * 2.6) break;
+        const finished = /[。．.]$/.test(capText) && !/注[:：]\s*$/.test(capText);
+        if (finished) break;
+        capText = joinTokens(capText, nt);
+        last = n;
+        i++;
+      }
+      blocks.push({ type: "caption", text: capText, fontSize: line.fontSize, y: line.y, column: line.column });
+      continue;
+    }
+
+    if (isHead) {
       pushBuf();
       blocks.push({
-        type: isCap ? "caption" : (line.fontSize >= bodySize * 1.35 ? "h2" : "h3"),
+        type: line.fontSize >= bodySize * 1.35 ? "h2" : "h3",
         text,
         fontSize: line.fontSize,
         y: line.y,
@@ -764,11 +972,16 @@ function linesToParagraphs(lines, pageWidth, bodySize) {
       buf = joinTokens(buf, text);
     }
 
-    const endPara = !next
-      || isHead
-      || colChange
-      || gap > paraGap
-      || (!reachesEdge && (shortLine || /[。．.！？!?]$/.test(text)));
+    const nextSame = next && (next.column === line.column || !line.column || line.column === "full" || next.column === "full");
+    const incomplete = !/[。．.！？!?；;]$/.test(text) && /[\u4e00-\u9fffA-Za-z0-9)」》]$/.test(text);
+    let endPara = !next || colChange;
+    if (!endPara && gap > paraGap) {
+      // Loose leading still continues a mid-sentence Chinese line in the same column.
+      if (!(nextSame && incomplete && gap <= line.fontSize * 2.6)) endPara = true;
+    }
+    if (!endPara && !reachesEdge && (shortLine || /[。．.！？!?]$/.test(text))) {
+      if (!(nextSame && incomplete && gap <= line.fontSize * 2.6)) endPara = true;
+    }
     if (endPara) pushBuf();
   }
   pushBuf();
@@ -805,6 +1018,7 @@ function filterRunning(lines, pageHeight, dropSet) {
     if (PAGE_NUM_RE.test(t)) return false;
     if (dropSet.has(normalizeHeader(l.text))) return false;
     if (t.length <= 4 && PAGE_NUM_RE.test(t.replace(/\s/g, ""))) return false;
+    if (!looksLikeCaption(t) && t.length <= 16 && (isDimVocab(t) || isFigureLabel(t))) return false;
     return true;
   });
 }
@@ -995,7 +1209,45 @@ async function renderPageRegion(page, viewport, rect, scale, maskBoxes) {
   cctx.fillStyle = "#fff";
   cctx.fillRect(0, 0, w, h);
   cctx.drawImage(full, x, y, w, h, 0, 0, w, h);
-  return crop.toDataURL("image/jpeg", 0.92);
+  return trimDarkBars(crop).toDataURL("image/jpeg", 0.92);
+}
+
+// Cut solid dark header/footer/caption bars out of a crop (do not paint over them).
+function trimDarkBars(canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 8 || h < 16) return canvas;
+  const ctx = canvas.getContext("2d");
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const rowStats = (row) => {
+    let dark70 = 0;
+    let dark100 = 0;
+    const lums = [];
+    const off = row * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = off + x * 4;
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      lums.push(lum);
+      if (lum < 70) dark70++;
+      if (lum < 100) dark100++;
+    }
+    lums.sort((a, b) => a - b);
+    return { med: lums[Math.floor(lums.length / 2)], d70: dark70 / w, d100: dark100 / w };
+  };
+  const isBar = (row) => {
+    const s = rowStats(row);
+    return s.med < 90 || s.d70 > 0.45 || s.d100 > 0.55;
+  };
+  let y0 = 0;
+  let y1 = h;
+  while (y0 < h - 8 && isBar(y0)) y0++;
+  while (y1 > y0 + 8 && isBar(y1 - 1)) y1--;
+  if (y0 === 0 && y1 === h) return canvas;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = y1 - y0;
+  out.getContext("2d").drawImage(canvas, 0, y0, w, y1 - y0, 0, 0, w, y1 - y0);
+  return out;
 }
 
 function columnBounds(line, layout, pageWidth) {
@@ -1095,7 +1347,9 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent({ includeMarkedContent: false, disableNormalization: false });
     const items = itemsFromTextContent(pdfjsLib, page, textContent, viewport);
-    const lines = groupLines(items, viewport.width);
+    let lines = groupLines(items, viewport.width);
+    const colGuess = detectColumns(lines, viewport.width);
+    if (colGuess.mode === "double") lines = groupLines(items, viewport.width, colGuess.gutter);
     let figures = [];
     let vectorRects = [];
     try {
@@ -1129,43 +1383,116 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
   const bodySize = median(bodySizes) || 10;
 
   const analyzed = pages.map((p) => {
-    const cleaned = filterRunning(p.lines, p.height, dropSet);
-    const anns = annotationClusters(cleaned, bodySize, p.width);
-    const materials = mergeFigureMaterials(p.figures, p.vectorRects, anns.regions, p.width, p.height, cleaned);
+    let cleaned = filterRunning(p.lines, p.height, dropSet);
+    const bodyish = cleaned.filter((l) => {
+      const t = tidyText(l.text);
+      return t.length >= 8 && !(isDimVocab(t) && t.length <= 24) && !isFigureLabel(t);
+    });
+    let layout = detectColumns(bodyish.length >= 8 ? bodyish : cleaned, p.width);
+    if (layout.mode === "double") {
+      cleaned = filterRunning(groupLines(p.items, p.width, layout.gutter), p.height, dropSet);
+    }
+    const drawings = (p.vectorRects || [])
+      .flatMap((r) => splitRegionByGutter(r, layout, p.width))
+      .flatMap((r) => splitRegionByBody(r, cleaned))
+      .flatMap((r) => splitRegionByCaptions(r, cleaned))
+      .filter((r) => !(r.w > p.width * 0.95 && r.h > p.height * 0.7))
+      .filter((r) => !isTextFrame(r, cleaned));
+    const anns = annotationClusters(cleaned, bodySize, p.width, layout);
+    let materials = mergeFigureMaterials(p.figures, drawings, anns.regions, p.width, p.height, cleaned, layout);
+    materials = materials
+      .flatMap((r) => splitRegionByGutter(r, layout, p.width))
+      .flatMap((r) => splitRegionByBody(r, cleaned))
+      .flatMap((r) => splitRegionByCaptions(r, cleaned))
+      .filter((r) => r.w >= 24 && r.h >= 16)
+      .filter((r) => r.kind === "raster" || regionBodyStats(cleaned, r).longBody === 0);
     const bodyForCols = cleaned.filter((l) => !anns.lines.has(l) && !materials.some((r) => lineInsideRegion(l, r)));
-    const layout = detectColumns(bodyForCols.length >= 8 ? bodyForCols : cleaned, p.width);
-    const masks = collectMaskBoxes(p.lines, p.height, dropSet);
-    return { p, cleaned, anns, materials, layout, masks };
+    const layout2 = detectColumns(bodyForCols.length >= 8 ? bodyForCols : cleaned, p.width);
+    if (layout2.mode === "double") {
+      const moved = Math.abs((layout2.gutter || 0) - (layout.gutter || 0)) > 8;
+      layout = layout2;
+      if (moved) cleaned = filterRunning(groupLines(p.items, p.width, layout.gutter), p.height, dropSet);
+    }
+    const band = contentBand(p.lines, p.height, p.width, dropSet, p.vectorRects);
+    materials = materials.map((r) => clipToBand(r, band)).filter(Boolean);
+    return { p, cleaned, anns, materials, layout, band, masks: [] };
   });
 
   // Build render jobs, including cross-page caption stitches.
-  const consumed = new Set();
+  const consumed = [];
+  const usedOn = (pageNum, r, thresh = 0.45) =>
+    consumed.some((c) => c.pageNum === pageNum && c.r && r && overlaps(c.r, r, thresh));
+  const markUsed = (pageNum, r) => { if (r) consumed.push({ pageNum, r }); };
+
   const jobs = [];
 
   const aboveCaption = (info, cap) => {
-    const bounds = columnBounds(cap, info.layout, info.p.width);
-    const bits = [];
+    const capCol = lineColumn(cap, info.layout, info.p.width);
+    const cands = [];
+    const sameColumn = (r) => {
+      if (info.layout.mode !== "double" || capCol === "full") return true;
+      if (r.w > info.p.width * 0.62) {
+        // Wide blobs should still be clipped later; only treat as same-col if they overlap this column.
+        const mid = r.x + r.w / 2;
+        if (capCol === "left") return r.x < info.layout.gutter;
+        return r.x + r.w > info.layout.gutter;
+      }
+      const rCol = (r.x + r.w / 2) < info.layout.gutter ? "left" : "right";
+      return rCol === capCol;
+    };
     for (const r of info.materials) {
-      const mid = r.x + r.w / 2;
-      const sameCol = mid >= bounds.x - 12 && mid <= bounds.x2 + 12 || r.w > info.p.width * 0.55;
-      if (!sameCol) continue;
-      if (r.y < cap.y - 4 && r.y + r.h > cap.y - info.p.height * 0.7) bits.push(r);
-    }
-    // Also grab nearby rasters explicitly
-    for (const f of info.p.figures) {
-      if (f.y + f.h <= cap.y + 8 && f.y + f.h > cap.y - info.p.height * 0.6) {
-        if (!bits.some((b) => overlaps(b, f, 0.4))) bits.push({ x: f.x, y: f.y, w: f.w, h: f.h, kind: "raster", src: f });
+      if (!sameColumn(r)) continue;
+      if (usedOn(info.p.pageNum, r, 0.45)) continue;
+      if (r.y < cap.y - 4 && r.y + r.h > cap.y - info.p.height * 0.55) {
+        cands.push({ r, gap: Math.max(0, cap.y - (r.y + r.h)) });
       }
     }
-    if (!bits.length) return null;
-    let u = { ...bits[0] };
-    for (let i = 1; i < bits.length; i++) u = rectUnion(u, bits[i]);
-    // Stop above the caption and any caption bar.
+    for (const f of info.p.figures) {
+      const box = { x: f.x, y: f.y, w: f.w, h: f.h, kind: "raster", src: f };
+      if (!sameColumn(box)) continue;
+      if (f.y + f.h <= cap.y + 8 && f.y + f.h > cap.y - info.p.height * 0.6) {
+        if (!cands.some((c) => overlaps(c.r, box, 0.4))) cands.push({ r: box, gap: cap.y - (f.y + f.h) });
+      }
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => a.gap - b.gap || (b.r.w * b.r.h) - (a.r.w * a.r.h));
+    let u = { ...cands[0].r };
+    for (const c of cands.slice(1)) {
+      if (c.r.y > cap.y - 8) continue;
+      if (c.gap > info.p.height * 0.45) continue;
+      const stackGap = Math.min(
+        Math.abs(c.r.y - (u.y + u.h)),
+        Math.abs(u.y - (c.r.y + c.r.h))
+      );
+      const stacked = stackGap < 44;
+      if (!stacked) {
+        if (bodyBetweenRects(u, c.r, info.cleaned)) continue;
+        if (c.gap > info.p.height * 0.22) continue;
+      }
+      u = rectUnion(u, c.r);
+    }
+    if (info.layout.mode === "double" && capCol !== "full" && u.w < info.p.width * 0.7) {
+      if (capCol === "left" && u.x + u.w > info.layout.gutter - 2) {
+        u.w = Math.max(20, info.layout.gutter - 4 - u.x);
+      } else if (capCol === "right" && u.x < info.layout.gutter + 2) {
+        const nx = info.layout.gutter + 4;
+        u.w = Math.max(20, u.x + u.w - nx);
+        u.x = nx;
+      }
+    }
     const bars = captionBandRects(info.p.vectorRects, cap);
     let bottom = cap.y - 3;
     for (const b of bars) bottom = Math.min(bottom, b.y - 1);
     u = tightenRegion(u, info.cleaned, bottom);
     if (u.y + u.h > bottom) u.h = Math.max(8, bottom - u.y);
+    u = clipToBand(u, info.band);
+    if (!u) return null;
+    // If body text still sits inside, keep only the slice closest to the caption.
+    const parts = splitRegionByBody(u, info.cleaned);
+    if (parts.length > 1) {
+      parts.sort((a, b) => Math.abs(cap.y - (a.y + a.h)) - Math.abs(cap.y - (b.y + b.h)));
+      u = parts[0];
+    }
     return u.h >= 20 && u.w >= 20 ? u : null;
   };
 
@@ -1175,41 +1502,58 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
     for (const cap of caps) {
       let here = aboveCaption(info, cap);
       const prev = i > 0 ? analyzed[i - 1] : null;
-      const capHigh = cap.y < info.p.height * 0.34;
-      const hereIsTopPanel = here && here.y < info.p.height * 0.12 && here.h < info.p.height * 0.32;
+      const capHigh = cap.y < info.p.height * 0.28;
+      const hereIsTopPanel = here && here.y < info.p.height * 0.14 && here.h < info.p.height * 0.36;
+      const prevEndsWithUncaptioned = !!(prev && prev.materials.some((r) => {
+        if (r.y + r.h < prev.p.height * 0.68 || r.y < prev.p.height * 0.45) return false;
+        return !prev.cleaned.some((l) => looksLikeCaption(l.text) && l.y >= r.y + r.h - 8 && l.y <= r.y + r.h + 48);
+      }));
       let prevRegion = null;
-      if (prev && (capHigh || hereIsTopPanel || !here)) {
+      if (here && here.kind === "raster") {
+        prevRegion = null;
+      } else if (prev && prevEndsWithUncaptioned && (capHigh || hereIsTopPanel || !here)) {
         const bottoms = prev.materials.filter((r) => r.y + r.h > prev.p.height * 0.68 && r.y > prev.p.height * 0.45);
         if (bottoms.length) {
           prevRegion = bottoms.reduce((a, b) => rectUnion(a, b));
+          const bodies = prev.cleaned.filter((l) => isBodyishLine(l) && l.y < prevRegion.y + prevRegion.h - 10 && (l.y + (l.fontSize || 10)) > prevRegion.y);
+          if (bodies.length) {
+            const cut = Math.max(...bodies.map((l) => l.y + (l.fontSize || 10) * 1.55));
+            if (cut + 8 < prevRegion.y + prevRegion.h - 24) {
+              prevRegion.h = prevRegion.y + prevRegion.h - (cut + 6);
+              prevRegion.y = cut + 6;
+            }
+          }
           prevRegion = tightenRegion(prevRegion, prev.cleaned, prev.p.height);
+          prevRegion = clipToBand(prevRegion, prev.band);
         }
       }
       if (prevRegion && (capHigh || hereIsTopPanel || !here)) {
-        const hereRect = here || {
+        const top = (info.band && info.band.headerBottom) || 0;
+        let hereRect = here || {
           x: Math.max(0, cap.x - 8),
-          y: 0,
+          y: top,
           w: Math.min(info.p.width, Math.max(cap.x2 - cap.x + 24, info.p.width * 0.8)),
-          h: Math.max(12, cap.y - 3),
+          h: Math.max(12, cap.y - 3 - top),
         };
-        // If "here" doesn't start near the top, still include from 0 when stitching a continued figure.
-        if (hereRect.y > 24 && capHigh) {
-          hereRect.h = hereRect.y + hereRect.h;
-          hereRect.y = 0;
+        if (hereRect.y > top + 8 && capHigh && hereRect.y < info.p.height * 0.2) {
+          hereRect.h = hereRect.y + hereRect.h - top;
+          hereRect.y = top;
         }
+        hereRect = clipToBand(hereRect, info.band) || hereRect;
         jobs.push({
           type: "stitch",
           cap,
           caption: shortCaption(cap.text),
           yInsert: cap.y,
           pageNum: info.p.pageNum,
-          a: { page: prev.p.page, viewport: prev.p.viewport, rect: prevRegion, masks: prev.masks },
-          b: { page: info.p.page, viewport: info.p.viewport, rect: hereRect, masks: info.masks },
+          aPageNum: prev.p.pageNum,
+          a: { page: prev.p.page, viewport: prev.p.viewport, rect: prevRegion, masks: [] },
+          b: { page: info.p.page, viewport: info.p.viewport, rect: hereRect, masks: [] },
           consume: [prevRegion, hereRect],
           consumePages: [prev, info],
         });
-        consumed.add(prevRegion);
-        if (here) consumed.add(here);
+        markUsed(prev.p.pageNum, prevRegion);
+        if (here) markUsed(info.p.pageNum, here);
         continue;
       }
       if (here) {
@@ -1222,9 +1566,9 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
           page: info.p.page,
           viewport: info.p.viewport,
           rect: here,
-          masks: info.masks,
+          masks: [],
         });
-        consumed.add(here);
+        markUsed(info.p.pageNum, here);
       }
     }
   }
@@ -1232,16 +1576,31 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
   // Uncaptioned leftover regions (e.g. a drawing whose caption was already stitched).
   for (const info of analyzed) {
     for (const r of info.materials) {
-      if ([...consumed].some((c) => c && overlaps(c, r, 0.4))) continue;
-      // Skip very thin leftover rules and frames that are mostly body text.
+      if (usedOn(info.p.pageNum, r, 0.4)) continue;
       if (r.h < 28) continue;
-      if (r.y + r.h < info.p.height * 0.12 && r.h < 80) continue;
-      if (r.y > info.p.height * 0.9 && r.h < 50) continue;
-      const stats = regionBodyStats(info.cleaned, r);
-      if (stats.longBody >= 2 && r.kind !== "raster") continue;
-      const drawn = r.kind === "raster" || r.kind === "draw" || r.kind === "panel"
-        || (r.kind === "ann" && stats.n >= 3 && stats.longBody === 0);
-      if (!drawn) continue;
+      if (r.kind === "raster") {
+        /* keep uncaptioned photos */
+      } else {
+        if (r.w > info.p.width * 0.8 && r.h > info.p.height * 0.3) continue;
+        if (r.y < info.p.height * 0.45) continue;
+        if (r.y + r.h < info.p.height * 0.70) continue;
+        if (isTextFrame(r, info.cleaned)) continue;
+        const stats = regionBodyStats(info.cleaned, r);
+        if (stats.longBody >= 1) continue;
+        const mid = r.x + r.w / 2;
+        const nearbyBody = info.cleaned.filter((l) => {
+          if (!isBodyishLine(l)) return false;
+          const lm = (l.x + (l.x2 || l.x)) / 2;
+          if (info.layout.mode === "double" && Math.abs(lm - mid) > info.p.width * 0.22) return false;
+          return true;
+        });
+        const above = nearbyBody.some((l) => l.y < r.y && r.y - l.y < 90);
+        const below = nearbyBody.some((l) => l.y > r.y + r.h && l.y - (r.y + r.h) < 90);
+        if (above && below) continue;
+        const drawn = r.kind === "draw" || r.kind === "panel"
+          || (r.kind === "ann" && stats.n >= 3);
+        if (!drawn) continue;
+      }
       jobs.push({
         type: "single",
         cap: null,
@@ -1253,7 +1612,7 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
         rect: r,
         masks: info.masks,
       });
-      consumed.add(r);
+      markUsed(info.p.pageNum, r);
     }
   }
 
@@ -1279,6 +1638,11 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
         anns: info.anns.regions.map((r) => ({ x:+r.x.toFixed(1), y:+r.y.toFixed(1), w:+r.w.toFixed(1), h:+r.h.toFixed(1) })),
         nRasters: (info.p.figures || []).length,
         rasters: (info.p.figures || []).map((r) => ({ x:+r.x.toFixed(1), y:+r.y.toFixed(1), w:+r.w.toFixed(1), h:+r.h.toFixed(1) })),
+        layout: info.layout,
+        band: info.band,
+        caps: info.cleaned.filter((l) => looksLikeCaption(l.text)).map((l) => ({
+          t: tidyText(l.text).slice(0, 40), y:+l.y.toFixed(1), x:+l.x.toFixed(1), x2:+(l.x2||0).toFixed(1), col: lineColumn(l, info.layout, info.p.width),
+        })),
       })),
     });
   }
@@ -1358,16 +1722,51 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
       return { ...f, column: col };
     });
 
-    const figRects = [
-      ...figBlocks,
-      ...info.materials,
-    ];
+    const figRects = figBlocks.slice();
+    for (const job of jobs) {
+      if (job.type === "stitch" && job.aPageNum === p.pageNum && job.a && job.a.rect) {
+        figRects.push(job.a.rect);
+      }
+    }
+
+    const captionDrops = new Set();
+    const cleanedSorted = info.cleaned.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const f of figBlocks) {
+      if (!f.capLine) continue;
+      const capCol = lineColumn(f.capLine, info.layout, p.width);
+      let last = f.capLine;
+      let capText = tidyText(f.capLine.text);
+      captionDrops.add(f.capLine);
+      for (const l of cleanedSorted) {
+        if (l === f.capLine || l.y <= last.y + 1) continue;
+        const nt = tidyText(l.text);
+        if (!nt || looksLikeCaption(nt)) {
+          if (l.y - last.y < (last.fontSize || 10) * 1.2 && lineColumn(l, info.layout, p.width) !== capCol) continue;
+          break;
+        }
+        const nCol = lineColumn(l, info.layout, p.width);
+        if (nCol !== "full" && capCol !== "full" && nCol !== capCol) continue;
+        if (l.y - last.y > (last.fontSize || 10) * 2.6) break;
+        const finished = /[。．.]$/.test(capText) && !/注[:：]\s*$/.test(capText);
+        if (finished) break;
+        capText = joinTokens(capText, nt);
+        last = l;
+        captionDrops.add(l);
+      }
+      f.caption = capText;
+    }
+
     const keepLines = info.cleaned.filter((l) => {
-      if (looksLikeCaption(l.text) && figBlocks.some((f) => f.capLine === l || (f.caption && shortCaption(l.text) === f.caption))) {
-        return false; // caption goes on the figure, not as a body paragraph
+      if (captionDrops.has(l)) return false;
+      if (looksLikeCaption(l.text) && figBlocks.some((f) => f.capLine === l || (f.caption && (shortCaption(l.text) === shortCaption(f.caption) || tidyText(f.caption).startsWith(tidyText(l.text)))))) {
+        return false;
       }
       if (info.anns.lines.has(l)) return false;
       if (figRects.some((r) => lineInsideRegion(l, r, 4))) return false;
+      const lt = tidyText(l.text);
+      if (l.y > p.height * 0.88 && isDimVocab(lt) && lt.length <= 40) return false;
+      // Standalone dimension callouts belong in the figure, not the body.
+      if (!looksLikeCaption(lt) && !isBodyishLine(l) && lt.length <= 18 && (isFigureLabel(lt) || isDimVocab(lt))) return false;
       return true;
     });
     const ordered = bandify(keepLines, info.layout, p.width);
@@ -1376,7 +1775,20 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib, skipRender, onD
     const usedCaps = new Set();
     const out = [];
     const capKey = (s) => String(s || "").replace(/\s+/g, "");
+    const flushFigs = (pred) => {
+      const pending = figBlocks
+        .filter((f) => !f._placed && pred(f))
+        .sort((a, c) => (a.yInsert || a.y) - (c.yInsert || c.y));
+      for (const f of pending) {
+        f._placed = true;
+        if (f.caption) usedCaps.add(capKey(f.caption));
+        out.push(f);
+      }
+    };
     for (const b of textBlocks) {
+      if ((b.column || "full") === "right") {
+        flushFigs((f) => (f.column || "full") === "left" || (f.column || "full") === "full");
+      }
       const pending = figBlocks
         .filter((f) => {
           if (f._placed) return false;
