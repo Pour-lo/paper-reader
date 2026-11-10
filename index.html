@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <script>
+    (function () {
+      var p = location.pathname;
+      if (p && !p.endsWith("/") && !/\.[a-zA-Z0-9]+$/.test(p)) {
+        location.replace(p + "/" + location.search + location.hash);
+      }
+    })();
+  </script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F6F1E8" id="themeColor">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="论文助手">
+  <meta name="description" content="在手机上舒适阅读论文。文字会重新排成适合阅读的一列，图片点一下就能放大。文件只留在你的手机里。">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <title>论文助手</title>
+</head>
+<body>
+  <div id="app">
+    <section id="home" class="screen screen-home" data-screen="home">
+      <header class="home-hero">
+        <div class="brand-mark" aria-hidden="true">文</div>
+        <h1>论文助手</h1>
+        <p class="lead">把论文重新排成适合手机看的样子，像看小说一样顺畅。图片点一下就能放大到全屏。文件只留在你的手机里，不会传到网上。</p>
+      </header>
+
+      <div class="home-actions">
+        <button type="button" class="btn-primary" id="btnOpen">打开论文</button>
+        <p class="hint">支持 PDF 和 Word（.docx）文件</p>
+        <input type="file" id="fileInput" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+      </div>
+
+      <section class="recent-section" id="recentSection" hidden>
+        <div class="section-head">
+          <h2>最近阅读</h2>
+        </div>
+        <ul id="recentList" class="recent-list"></ul>
+      </section>
+
+      <section class="tips">
+        <h2>使用小提示</h2>
+        <ol>
+          <li>用手机自带的 Chrome 浏览器打开本页面。</li>
+          <li>点右上角菜单，选择「添加到主屏幕」或「安装应用」，以后就能像普通软件一样从桌面打开。</li>
+          <li>遇到公式或表格排版乱了，点正文里的「看原页」，就能对照这一页原来的样子。</li>
+        </ol>
+      </section>
+    </section>
+
+    <section id="reader" class="screen screen-reader" data-screen="reader" hidden>
+      <header class="reader-bar" id="readerBar">
+        <button type="button" class="icon-btn" id="btnBack" aria-label="返回">
+          <span class="icon-arrow-left"></span>
+        </button>
+        <h1 class="reader-title" id="readerTitle">论文</h1>
+        <button type="button" class="icon-btn" id="btnToc" aria-label="目录" hidden>
+          <span class="icon-list"></span>
+        </button>
+        <button type="button" class="icon-btn" id="btnSettings" aria-label="阅读设置">
+          <span class="icon-type"></span>
+        </button>
+      </header>
+      <article id="article" class="article"></article>
+      <div id="endHint" class="end-hint" hidden>已经到最后了</div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" hidden role="status"></div>
+
+  <div id="loading" class="overlay" hidden>
+    <div class="overlay-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="loadingText">正在整理排版，请稍候…</p>
+      <p id="loadingSub" class="loading-sub"></p>
+    </div>
+  </div>
+
+  <div id="settingsSheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close="settings"></div>
+    <div class="sheet-panel" role="dialog" aria-labelledby="settingsTitle">
+      <div class="sheet-handle"></div>
+      <h2 id="settingsTitle">阅读设置</h2>
+
+      <label class="setting">
+        <span>字号</span>
+        <div class="setting-row">
+          <button type="button" class="step-btn" id="fontMinus" aria-label="减小字号">A−</button>
+          <input type="range" id="fontRange" min="14" max="40" step="1" value="20">
+          <button type="button" class="step-btn" id="fontPlus" aria-label="增大字号">A+</button>
+        </div>
+        <em id="fontValue">20</em>
+      </label>
+
+      <label class="setting">
+        <span>行距</span>
+        <input type="range" id="lineRange" min="140" max="240" step="5" value="180">
+        <em id="lineValue">适中</em>
+      </label>
+
+      <label class="setting">
+        <span>左右边距</span>
+        <input type="range" id="marginRange" min="12" max="36" step="2" value="22">
+        <em id="marginValue">适中</em>
+      </label>
+
+      <div class="setting">
+        <span>背景</span>
+        <div class="theme-picks" role="radiogroup" aria-label="背景">
+          <button type="button" class="theme-pick" data-theme="day">白天</button>
+          <button type="button" class="theme-pick" data-theme="sepia">护眼</button>
+          <button type="button" class="theme-pick" data-theme="night">夜间</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tocSheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close="toc"></div>
+    <div class="sheet-panel" role="dialog" aria-labelledby="tocTitle">
+      <div class="sheet-handle"></div>
+      <h2 id="tocTitle">目录</h2>
+      <nav id="tocList" class="toc-list"></nav>
+    </div>
+  </div>
+
+  <div id="viewer" class="viewer" hidden>
+    <div class="viewer-bar">
+      <button type="button" class="icon-btn light" id="btnCloseViewer" aria-label="关闭">关闭</button>
+      <p id="viewerCaption" class="viewer-caption"></p>
+    </div>
+    <div id="viewerStage" class="viewer-stage">
+      <img id="viewerImage" alt="放大查看">
+    </div>
+    <p class="viewer-hint">两指缩放，单指拖动</p>
+  </div>
+
+  <script src="vendor/mammoth.browser.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
