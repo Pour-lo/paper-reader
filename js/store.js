@@ -7,6 +7,7 @@ const defaultSettings = {
   lineHeight: 1.8,
   margin: 22,
   theme: "day",
+  pageMode: "scroll",
 };
 
 function openDb() {

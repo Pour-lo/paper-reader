@@ -508,3 +508,121 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   margin: 0 0 1.1em;
   color: var(--ink-dim);
 }
+
+.mode-picks { grid-template-columns: 1fr 1fr; }
+
+.install-tip {
+  margin: 8px 0 20px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.install-tip p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+.install-tip button {
+  appearance: none;
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+@media (display-mode: standalone) {
+  #installTip { display: none !important; }
+}
+
+.page-viewport { min-height: 0; }
+.page-indicator {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--safe-b);
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-family: var(--sans);
+  color: var(--ink-dim);
+  pointer-events: none;
+  z-index: 15;
+  letter-spacing: 0.04em;
+}
+
+html.mode-paged,
+html.mode-paged body {
+  overflow: hidden;
+  height: 100%;
+  height: 100dvh;
+}
+html.mode-paged .screen-reader {
+  padding-top: 0;
+  height: 100dvh;
+  overflow: hidden;
+}
+html.mode-paged .page-viewport {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: calc(var(--bar-h) + var(--safe-t));
+  bottom: calc(28px + var(--safe-b));
+  overflow: hidden;
+  touch-action: none;
+  padding: 0;
+}
+html.mode-paged .article {
+  max-width: none;
+  margin: 0;
+  padding: 8px 0 12px;
+  height: 100%;
+  width: 100%;
+  column-fill: auto;
+  column-gap: 32px;
+  will-change: transform;
+}
+html.mode-paged .article > * {
+  margin-left: var(--side);
+  margin-right: var(--side);
+}
+html.mode-paged .page-indicator { display: flex; }
+html.mode-paged .end-hint { display: none !important; }
+html.mode-paged .article .figure-block,
+html.mode-paged .article .page-mark,
+html.mode-paged .article .notice,
+html.mode-paged .article h2,
+html.mode-paged .article h3,
+html.mode-paged .article .paper-title {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+html.mode-paged .article p {
+  orphans: 2;
+  widows: 2;
+}
+html.mode-paged .figure-block {
+  margin-left: var(--side);
+  margin-right: var(--side);
+}
+html.mode-paged .figure-block img {
+  width: auto;
+  max-width: 100%;
+  max-height: calc(var(--page-h, 70dvh) - 4.5em);
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.toast.toast-action {
+  cursor: pointer;
+  text-decoration: none;
+  padding: 12px 18px;
+  box-shadow: var(--shadow);
+}
