@@ -709,7 +709,7 @@ function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   const swUrl = new URL("../sw.js", import.meta.url);
   const scope = new URL("../", import.meta.url).href;
-  navigator.serviceWorker.register(swUrl, { scope }).then((reg) => {
+  navigator.serviceWorker.register(swUrl, { scope, updateViaCache: "none" }).then((reg) => {
     let prompted = false;
     const promptUpdate = (worker) => {
       if (!worker || prompted) return;
@@ -737,8 +737,16 @@ function registerServiceWorker() {
         if (w.state === "installed" && navigator.serviceWorker.controller) promptUpdate(w);
       });
     });
-    // Check for a waiting update quietly; never auto-reload.
-    reg.update().catch(() => {});
+    // Check for a waiting update quietly; never auto-reload in a loop.
+    const check = () => {
+      reg.update().catch(() => {});
+      if (reg.waiting) promptUpdate(reg.waiting);
+    };
+    check();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") check();
+    });
+    window.addEventListener("focus", check);
   }).catch((err) => console.warn("sw", err));
 }
 

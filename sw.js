@@ -1,4 +1,4 @@
-const CACHE = "paper-reader-v3";
+const CACHE = "paper-reader-v4";
 const NETWORK_MS = 3000;
 const REVALIDATE_MS = 8000;
 
@@ -130,11 +130,15 @@ async function precacheList(cache, urls, ms) {
 
 self.addEventListener("install", (event) => {
   // Precache only the app shell so install can finish even on a slow link.
-  // Do not skipWaiting: a waiting worker is applied when the reader taps the update toast.
+  // skipWaiting after precache so stale v2/v3 installs (no update toast) get v4 on the next launch.
+  // Do not auto-reload clients here; the in-app toast still offers a manual refresh.
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     await precacheList(cache, CORE, 8000);
     await mirrorDocument(cache);
+    // Activate as soon as the shell is cached so older installs (v2 cache-first,
+    // no update toast) pick this up on the next launch without a reload loop.
+    await self.skipWaiting();
   })());
 });
 
