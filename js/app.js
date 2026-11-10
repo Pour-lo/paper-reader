@@ -38,7 +38,10 @@ const viewer = createViewer({
   caption: $("viewerCaption"),
   stage: $("viewerStage"),
 });
-$("btnCloseViewer").addEventListener("click", () => viewer.close());
+$("btnCloseViewer").addEventListener("click", () => {
+  if (history.state && history.state.pr === "viewer") history.back();
+  else viewer.close();
+});
 
 function toast(msg) {
   toastEl.textContent = msg;
@@ -117,7 +120,7 @@ async function renderRecent() {
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
       await deleteFile(f.id);
-      toast("已从最近阅读中去掉");
+      toast("已从这台手机里移除这篇论文和阅读位置。原文件还在你原来的地方。");
       renderRecent();
     });
     li.append(open, del);
@@ -158,10 +161,15 @@ function renderArticle(extracted, displayTitle) {
       btn.type = "button";
       btn.className = "fig-btn";
       const img = document.createElement("img");
+      img.loading = "lazy";
+      img.decoding = "async";
       img.src = b.url;
       img.alt = b.caption || "论文插图，点一下可放大";
       btn.append(img);
-      btn.addEventListener("click", () => viewer.open(b.url, b.caption || "论文插图"));
+      btn.addEventListener("click", () => {
+        viewer.open(b.url, b.caption || "论文插图");
+        if (!(history.state && history.state.pr === "viewer")) history.pushState({ pr: "viewer" }, "", location.href);
+      });
       wrap.append(btn);
       const cap = document.createElement("figcaption");
       cap.className = "fig-cap";
@@ -231,6 +239,7 @@ async function showOriginalPage(pageNum) {
     const rendered = await renderPdfPage(session.pdf, pageNum);
     hideLoading();
     viewer.open(rendered.url, `第 ${pageNum} 页原貌（可放大查看）`);
+      if (!(history.state && history.state.pr === "viewer")) history.pushState({ pr: "viewer" }, "", location.href);
   } catch (err) {
     hideLoading();
     console.error(err);
@@ -254,6 +263,10 @@ async function ingestFile(file, existingId) {
     return;
   }
   showLoading("正在整理排版，请稍候…", name);
+  if (session && session.pdf && session.pdf.destroy) {
+    try { await session.pdf.destroy(); } catch {}
+    session.pdf = null;
+  }
   try {
     const buffer = await file.arrayBuffer();
     // pdf.js may detach the ArrayBuffer it receives; keep a copy for local storage.
@@ -267,7 +280,7 @@ async function ingestFile(file, existingId) {
       extracted = await extractPdf(work, {
         pdfjsLib,
         onProgress: (n, total) => {
-          loadingSub.textContent = `正在处理第 ${n} / ${total} 页`;
+          loadingSub.textContent = `正在整理第 ${n} / ${total} 页`;
         },
       });
     }
@@ -319,7 +332,17 @@ async function present(extracted, rec) {
   fillToc(session.headings);
   setScreen("reader");
   hideLoading();
-  const prog = await getProgress(rec.id);
+  if (!(history.state && history.state.pr === "reader")) {
+    history.pushState({ pr: "reader" }, "", location.href);
+  }
+  const textLen = (extracted.blocks || []).reduce((n, b) => n + (b.text ? b.text.length : 0), 0);
+  if (extracted.kind === "pdf" && extracted.numPages && textLen < extracted.numPages * 40) {
+    const note = document.createElement("p");
+    note.className = "notice";
+    note.textContent = "这份论文主要是扫描图片，暂时不能调整文字大小。可以逐页查看并放大。";
+    article.insertBefore(note, article.querySelector(".paper-title") ? article.querySelector(".paper-title").nextSibling : article.firstChild);
+  }
+  const prog = await getProgress(rec.id).catch(() => null);
   requestAnimationFrame(() => {
     if (prog && typeof prog.ratio === "number" && prog.ratio > 0.01) {
       const max = document.documentElement.scrollHeight - window.innerHeight;
@@ -340,7 +363,7 @@ async function openStored(id) {
       await renderRecent();
       return;
     }
-    await touchFile(id);
+    await touchFile(id).catch(() => {});
     const file = new File([rec.buffer], rec.name, { type: rec.type || (rec.kind === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : "application/pdf") });
     await ingestFile(file, rec.id);
   } catch (err) {
@@ -364,15 +387,50 @@ fileInput.addEventListener("change", async () => {
   fileInput.value = "";
   if (file) await ingestFile(file);
 });
-$("btnBack").addEventListener("click", async () => {
+async function goHome() {
   persistProgress();
+  const old = session;
+  session = null;
   setScreen("home");
   await renderRecent();
+  if (old && old.pdf && old.pdf.destroy) {
+    try { await old.pdf.destroy(); } catch {}
+  }
+}
+
+function closeTopOverlay() {
+  if (!$("viewer").hidden) {
+    viewer.close();
+    return true;
+  }
+  if (!$("tocSheet").hidden) {
+    closeSheet("toc");
+    return true;
+  }
+  if (!$("settingsSheet").hidden) {
+    closeSheet("settings");
+    return true;
+  }
+  return false;
+}
+
+$("btnBack").addEventListener("click", () => {
+  if (history.state && history.state.pr === "reader") history.back();
+  else goHome();
 });
-$("btnSettings").addEventListener("click", () => openSheet("settings"));
-$("btnToc").addEventListener("click", () => openSheet("toc"));
+$("btnSettings").addEventListener("click", () => {
+  openSheet("settings");
+  if (!(history.state && history.state.pr === "sheet")) history.pushState({ pr: "sheet" }, "", location.href);
+});
+$("btnToc").addEventListener("click", () => {
+  openSheet("toc");
+  if (!(history.state && history.state.pr === "sheet")) history.pushState({ pr: "sheet" }, "", location.href);
+});
 document.querySelectorAll("[data-close]").forEach((el) => {
-  el.addEventListener("click", () => closeSheet(el.getAttribute("data-close")));
+  el.addEventListener("click", () => {
+    if (history.state && history.state.pr === "sheet") history.back();
+    else closeSheet(el.getAttribute("data-close"));
+  });
 });
 
 $("fontRange").addEventListener("input", () => {
@@ -403,11 +461,16 @@ document.querySelectorAll(".theme-pick").forEach((btn) => {
 });
 
 function persistProgress() {
-  if (!session) return;
+  if (!session || reader.hidden) return;
   const max = document.documentElement.scrollHeight - window.innerHeight;
   const ratio = max > 0 ? window.scrollY / max : 0;
   saveProgress(session.id, { ratio }).catch(() => {});
 }
+
+window.addEventListener("popstate", () => {
+  if (closeTopOverlay()) return;
+  if (!reader.hidden) goHome();
+});
 
 window.addEventListener("scroll", () => {
   if (reader.hidden) return;

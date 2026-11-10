@@ -1,9 +1,10 @@
-const CACHE = "paper-reader-v1";
+const CACHE = "paper-reader-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    let assets = ["./ ", "./index.html", "./css/app.css", "./js/app.js", "./js/store.js", "./js/pdf-extract.js", "./js/docx-extract.js", "./js/viewer.js", "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./vendor/mammoth.browser.min.js", "./vendor/pdfjs/pdf.min.mjs", "./vendor/pdfjs/pdf.worker.min.mjs"];
+    const core = ["./", "./index.html", "./css/app.css", "./js/app.js", "./js/store.js", "./js/pdf-extract.js", "./js/docx-extract.js", "./js/viewer.js", "./manifest.json", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-maskable-512.png", "./vendor/mammoth.browser.min.js", "./vendor/pdfjs/pdf.min.mjs", "./vendor/pdfjs/pdf.worker.min.mjs"];
+    let assets = core.slice();
     try {
       const res = await fetch("./asset-list.json");
       if (res.ok) {
@@ -11,7 +12,8 @@ self.addEventListener("install", (event) => {
         if (Array.isArray(list) && list.length) assets = list;
       }
     } catch {}
-    // Cache what we can; missing optional assets should not fail install.
+    // Core files should be cached; other assets (fonts, cmaps, wasm) are best-effort.
+    await Promise.all(core.map((u) => cache.add(u).catch(() => null)));
     await Promise.allSettled(assets.map((u) => cache.add(u)));
     await self.skipWaiting();
   })());
@@ -20,7 +22,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+    await Promise.all(keys.filter((k) => k.startsWith("paper-reader-") && k !== CACHE).map((k) => caches.delete(k)));
     await self.clients.claim();
   })());
 });

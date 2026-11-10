@@ -61,14 +61,31 @@ export async function getFile(id) {
 export async function listFiles() {
   const db = await openDb();
   const rows = await new Promise((resolve, reject) => {
-    const req = db.transaction("files").objectStore("files").getAll();
-    req.onsuccess = () => resolve(req.result || []);
+    const out = [];
+    const req = db.transaction("files").objectStore("files").openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(out);
+        return;
+      }
+      const rec = cursor.value || {};
+      out.push({
+        id: rec.id,
+        name: rec.name,
+        kind: rec.kind,
+        type: rec.type,
+        size: rec.size,
+        title: rec.title,
+        addedAt: rec.addedAt,
+        lastReadAt: rec.lastReadAt,
+      });
+      cursor.continue();
+    };
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return rows
-    .map(({ buffer, ...meta }) => meta)
-    .sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0));
+  return rows.sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0));
 }
 
 export async function deleteFile(id) {

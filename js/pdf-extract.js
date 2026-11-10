@@ -762,9 +762,15 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib } = {}) {
     }
 
     const standalone = p.figures.filter((f) => !regionFigs.some((r) => overlaps(f, r, 0.45)));
+    const figureColumn = (f) => {
+      if (layout.mode !== "double") return "full";
+      if ((f.w || 0) > p.width * 0.55) return "full";
+      const mid = (f.x || 0) + (f.w || 0) / 2;
+      return mid < layout.gutter ? "left" : "right";
+    };
     const figBlocks = [
-      ...regionFigs,
-      ...standalone.map((f) => ({ ...f, yInsert: f.y + f.h })),
+      ...regionFigs.map((f) => ({ ...f, column: figureColumn(f) })),
+      ...standalone.map((f) => ({ ...f, yInsert: f.y + f.h, column: figureColumn(f) })),
     ];
 
     const merged = [
@@ -778,20 +784,31 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib } = {}) {
     const out = [];
     for (const b of textBlocks) {
       const pending = figBlocks
-        .filter((f) => !f._placed && (f.yInsert || f.y) <= (b.y || 0) + 2)
+        .filter((f) => {
+          if (f._placed) return false;
+          if ((f.yInsert || f.y) > (b.y || 0) + 2) return false;
+          const fCol = f.column || "full";
+          const bCol = b.column || "full";
+          return fCol === "full" || bCol === "full" || fCol === bCol;
+        })
         .sort((a, c) => (a.yInsert || a.y) - (c.yInsert || c.y));
+      const capKey = (s) => String(s || "").replace(/\s+/g, "");
       for (const f of pending) {
         f._placed = true;
         if (f.caption) {
-        f.caption = shortCaption(f.caption);
-        usedCaps.add(f.caption);
-        usedCaps.add(f.caption.replace(/\s+/g, ""));
-      }
+          f.caption = shortCaption(f.caption);
+          usedCaps.add(capKey(f.caption));
+        }
         out.push(f);
       }
       // drop standalone caption paragraph if we already attached it to a figure
-      if (b.type === "caption" && figBlocks.some((f) => f.caption === b.text)) {
-        continue;
+      if (b.type === "caption") {
+        const key = capKey(shortCaption(b.text));
+        const raw = capKey(b.text);
+        if ([...usedCaps].some((k) => k && (k === key || k === raw || raw.startsWith(k) || key.startsWith(k)))
+          || figBlocks.some((f) => capKey(f.caption) && (capKey(f.caption) === key || raw.startsWith(capKey(f.caption))))) {
+          continue;
+        }
       }
       out.push(b);
     }
@@ -863,11 +880,14 @@ export async function extractPdf(buffer, { onProgress, pdfjsLib } = {}) {
     if (extra.length > headings.length) {
       headings.length = 0;
       extra.forEach((h, i) => headings.push({ id: `o-${i}`, text: h.text, level: h.level }));
-      // Try to match heading text in blocks for jump targets
+      // Point each outline entry at a real block; keep a single shared id so the directory can jump.
       for (const h of headings) {
-        const hit = allBlocks.find((b) => (b.type === "h2" || b.type === "h3" || b.type === "p") && b.text && b.text.replace(/\s/g, "").includes(h.text.replace(/\s/g, "").slice(0, 12)));
+        const needle = h.text.replace(/\s/g, "").slice(0, 12);
+        if (!needle) continue;
+        const hit = allBlocks.find((b) => (b.type === "h2" || b.type === "h3" || b.type === "p") && b.text && b.text.replace(/\s/g, "").includes(needle));
         if (hit) {
-          hit.id = hit.id || h.id;
+          if (hit.id) h.id = hit.id;
+          else hit.id = h.id;
           h.pageNum = hit.pageNum;
         }
       }
