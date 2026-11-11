@@ -16,7 +16,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="论文助手">
-  <meta name="app-version" content="6">
+  <meta name="app-version" content="7">
   <meta name="description" content="在手机上舒适阅读论文。文字会重新排成适合阅读的一列，图片点一下就能放大。文件只留在你的手机里。">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png?v=3">
@@ -26,6 +26,7 @@
   <style>
     html,body{margin:0;background:#F6F1E8;color:#2A221C;font-family:system-ui,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
   </style>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -60,7 +61,7 @@
         <ol>
           <li>用 Chrome 浏览器打开本页面最稳妥。</li>
           <li>点右上角菜单，选择「安装应用」或「添加到主屏幕」，以后就能从桌面打开。如果桌面图标还是旧的，删掉后再添加一次。</li>
-          <li>阅读时可在设置里选择「上下滚动」或「左右翻页」。</li>
+          <li>阅读时可在设置里选择「上下滚动」或「左右翻页」。左右翻页时，还可选择滑动、仿真翻书，或不要动画。</li>
           <li>遇到公式或表格排版乱了，点正文里的「看原页」，就能对照这一页原来的样子。</li>
           <li>请自己保留原文件。如果清理了浏览器数据，需要重新打开论文。</li>
         </ol>
@@ -112,26 +113,32 @@
         </div>
       </div>
 
+      <div class="setting" id="effectSetting" hidden>
+        <span>翻页效果</span>
+        <div class="theme-picks effect-picks" role="radiogroup" aria-label="翻页效果">
+          <button type="button" class="theme-pick effect-pick" data-effect="slide">左右滑动</button>
+          <button type="button" class="theme-pick effect-pick" data-effect="curl">仿真翻书</button>
+          <button type="button" class="theme-pick effect-pick" data-effect="none">无动画</button>
+        </div>
+      </div>
+
       <label class="setting">
-        <span>字号</span>
+        <span>字号<em id="fontValue">20</em></span>
         <div class="setting-row">
           <button type="button" class="step-btn" id="fontMinus" aria-label="减小字号">A−</button>
           <input type="range" id="fontRange" min="14" max="40" step="1" value="20">
           <button type="button" class="step-btn" id="fontPlus" aria-label="增大字号">A+</button>
         </div>
-        <em id="fontValue">20</em>
       </label>
 
       <label class="setting">
-        <span>行距</span>
+        <span>行距<em id="lineValue">适中</em></span>
         <input type="range" id="lineRange" min="140" max="240" step="5" value="180">
-        <em id="lineValue">适中</em>
       </label>
 
       <label class="setting">
-        <span>左右边距</span>
+        <span>左右边距<em id="marginValue">适中</em></span>
         <input type="range" id="marginRange" min="12" max="36" step="2" value="22">
-        <em id="marginValue">适中</em>
       </label>
 
       <div class="setting">

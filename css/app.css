@@ -398,8 +398,8 @@ button { cursor: pointer; }
 }
 .sheet-panel h2 { font-size: 16px; margin: 0 0 16px; }
 .setting { display: block; margin-bottom: 18px; }
-.setting > span { display: block; font-size: 13px; color: var(--ink-dim); margin-bottom: 8px; }
-.setting em { font-style: normal; font-size: 12px; color: var(--ink-dim); float: right; margin-top: -1.8em; }
+.setting > span { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--ink-dim); margin-bottom: 8px; }
+.setting em { font-style: normal; font-size: 12px; color: var(--ink-dim); float: none; margin-top: 0; flex-shrink: 0; }
 .setting-row { display: flex; align-items: center; gap: 8px; }
 .setting-row input { flex: 1; }
 .step-btn {
@@ -625,4 +625,245 @@ html.mode-paged .figure-block img {
   text-decoration: none;
   padding: 12px 18px;
   box-shadow: var(--shadow);
+}
+
+/* Math (KaTeX) */
+.article .math-inline {
+  display: inline;
+  vertical-align: baseline;
+  text-align: initial;
+  max-width: 100%;
+  padding: 0;
+  line-height: inherit;
+}
+.article .math-block {
+  display: block;
+  text-align: center;
+  margin: 0.75em 0;
+  max-width: 100%;
+  overflow: visible;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+  padding: 4px 0;
+}
+.article .math-block .katex-display {
+  margin: 0;
+  overflow: visible;
+  padding: 2px 0;
+  text-align: center;
+}
+.eq-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.5em;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0.75em 0;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+.eq-block.eq-wrap {
+  grid-template-columns: minmax(0, 1fr);
+}
+.eq-block.eq-wrap .eq-num {
+  justify-self: end;
+  margin-top: 0.15em;
+}
+.eq-num {
+  white-space: nowrap;
+  text-align: right;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.math-slot {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.math-slot-block {
+  margin: 0.75em 0;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+}
+.math-slot-inline {
+  display: inline;
+  vertical-align: baseline;
+  max-width: 100%;
+  padding: 0;
+  line-height: inherit;
+}
+.math-slot .math-block {
+  margin: 0 auto;
+  max-width: none;
+  width: max-content;
+}
+.math-slot .math-block .katex-display,
+.math-slot .math-block .katex-display > .katex {
+  width: max-content;
+  max-width: none;
+}
+.math-hscroll {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.math-slot-inline .math-hscroll {
+  display: inline;
+  vertical-align: baseline;
+  width: auto;
+  max-width: 100%;
+  line-height: inherit;
+  overflow: visible;
+}
+.math-slot-inline.is-overflow,
+.math-slot-inline.is-overflow .math-hscroll {
+  display: inline-block;
+  vertical-align: baseline;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.math-hscroll::-webkit-scrollbar { height: 0; display: none; }
+.math-slot.is-overflow::after,
+.math-slot.is-overflow.is-scrolled::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5em;
+  pointer-events: none;
+  z-index: 1;
+}
+.math-slot.is-overflow::after {
+  right: 0;
+  background: linear-gradient(to right, transparent, var(--bg, #F6F1E8));
+}
+.math-slot.is-overflow.is-scroll-end::after { display: none; }
+.math-slot.is-overflow.is-scrolled::before {
+  left: 0;
+  background: linear-gradient(to left, transparent, var(--bg, #F6F1E8));
+}
+/* Do not set text-align on .katex — it would override KaTeX's
+   .katex-display > .katex { text-align: center } (same specificity). */
+.article .katex {
+  color: var(--ink);
+}
+/* Display math can stay slightly larger; inline must match CJK body. */
+.article .math-block .katex {
+  font-size: 1.06em;
+}
+.article .math-inline .katex {
+  font-size: 1.05em;
+  line-height: 1;
+  display: inline;
+  vertical-align: baseline;
+  font-weight: 400;
+}
+.article .math-block .katex-display > .katex {
+  text-align: center;
+}
+.article sub,
+.article sup {
+  font-size: 0.72em;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+.article sub { bottom: -0.25em; }
+.article sup { top: -0.45em; }
+
+.table-wrap {
+  margin: 0.8em 0 1.1em;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+}
+.paper-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86em;
+  font-family: var(--sans);
+  line-height: 1.45;
+  text-align: left;
+}
+.paper-table td,
+.paper-table th {
+  border: 1px solid var(--rule);
+  padding: 6px 8px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+html.mode-paged .article .math-block,
+html.mode-paged .article .table-wrap,
+html.mode-paged .article .eq-block,
+html.mode-paged .article .math-slot-block {
+  margin-left: var(--side);
+  margin-right: var(--side);
+}
+html.mode-paged .article .eq-block .math-block,
+html.mode-paged .article .math-slot .math-block,
+html.mode-paged .article .eq-block .math-slot-block,
+html.mode-paged .article .math-slot .math-slot-block {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Page turn */
+.page-viewport { position: relative; }
+.curl-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 3;
+  display: block;
+}
+html.mode-paged .page-viewport {
+  contain: strict;
+  background: var(--bg);
+  isolation: isolate;
+}
+html.mode-paged .article {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.effect-picks { grid-template-columns: 1fr 1fr 1fr; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.mode-paged .article {
+    transition: none !important;
+  }
+  .curl-canvas { display: none !important; }
+  .spinner { animation: none; }
+}
+
+@media (max-width: 360px) {
+  .effect-picks .theme-pick,
+  .mode-picks .theme-pick {
+    font-size: 13px;
+    padding: 10px 4px;
+  }
+  .sheet-panel {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }

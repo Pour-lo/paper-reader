@@ -1,5 +1,6 @@
 import { extractPdf, renderPdfPage } from "./pdf-extract.js";
 import { extractDocx } from "./docx-extract.js";
+import { loadKatex, appendParts, renderMathEl, renderEqBlock, mountParts, fitAllMath, bindMathScrollHints } from "./math-render.js";
 import {
   hashBuffer, saveFile, getFile, listFiles, deleteFile, touchFile,
   saveProgress, getProgress, loadSettings, saveSettings,
@@ -28,6 +29,7 @@ const TIP_KEY = "paper-reader-install-tip";
 
 let settings = loadSettings();
 if (settings.pageMode !== "paged") settings.pageMode = "scroll";
+if (settings.pageEffect !== "curl" && settings.pageEffect !== "none") settings.pageEffect = "slide";
 let session = null;
 let lastScroll = 0;
 let progressTimer = 0;
@@ -51,6 +53,7 @@ const pager = createPager({
   indicator: pageIndicator,
   bar: readerBar,
   endHint,
+  getEffect: () => settings.pageEffect,
   onProgress() {
     clearTimeout(progressTimer);
     progressTimer = setTimeout(persistProgress, 250);
@@ -137,6 +140,11 @@ function applySettings() {
   document.querySelectorAll(".mode-pick[data-mode]").forEach((btn) => {
     btn.setAttribute("aria-pressed", btn.dataset.mode === settings.pageMode ? "true" : "false");
   });
+  document.querySelectorAll(".effect-pick[data-effect]").forEach((btn) => {
+    btn.setAttribute("aria-pressed", btn.dataset.effect === settings.pageEffect ? "true" : "false");
+  });
+  const effectSetting = $("effectSetting");
+  if (effectSetting) effectSetting.hidden = settings.pageMode !== "paged";
   const wantPaged = settings.pageMode === "paged" && !reader.hidden;
   if (wantPaged && !pager.isEnabled()) {
     pager.enable();
@@ -276,13 +284,57 @@ function renderArticle(extracted, displayTitle) {
       article.append(tag(el));
       continue;
     }
-    if (b.type === "p" && b.text) {
-      const p = document.createElement("p");
-      p.textContent = b.text;
-      article.append(tag(p));
+    if (b.type === "math" || b.type === "eq") {
+      article.append(tag(renderEqBlock(b.latex || "", b.eqnum || "", true)));
+      continue;
+    }
+    if (b.type === "table") {
+      article.append(tag(renderTable(b)));
+      continue;
+    }
+    if (b.type === "p" && (b.text || (b.parts && b.parts.length))) {
+      if (b.parts && b.parts.length) {
+        const el = mountParts(b.parts);
+        if (b.list && el.tagName === "P") el.classList.add("list-p");
+        article.append(tag(el));
+      } else {
+        const p = document.createElement("p");
+        if (b.list) p.classList.add("list-p");
+        p.textContent = b.text;
+        article.append(tag(p));
+      }
     }
   }
   endHint.hidden = settings.pageMode === "paged";
+  bindMathScrollHints(article);
+  requestAnimationFrame(() => fitAllMath(article));
+}
+
+function renderTable(block) {
+  const wrap = document.createElement("div");
+  wrap.className = "table-wrap";
+  if (!block.rows || !block.rows.length) {
+    const p = document.createElement("p");
+    p.textContent = block.text || "【表格】";
+    wrap.append(p);
+    return wrap;
+  }
+  const table = document.createElement("table");
+  table.className = "paper-table";
+  const body = document.createElement("tbody");
+  for (const row of block.rows) {
+    const tr = document.createElement("tr");
+    for (const cell of row) {
+      const td = document.createElement("td");
+      if (cell.parts && cell.parts.length) appendParts(td, cell.parts);
+      else td.textContent = cell.text || "";
+      tr.append(td);
+    }
+    body.append(tr);
+  }
+  table.append(body);
+  wrap.append(table);
+  return wrap;
 }
 
 function fillToc(headings) {
@@ -450,6 +502,9 @@ async function present(extracted, rec) {
   };
   readerTitle.textContent = session.title;
   document.title = session.title + " · 论文助手";
+  if (extracted.hasMath) {
+    try { await loadKatex(); } catch {}
+  }
   renderArticle(extracted, session.title);
   fillToc(session.headings);
   setScreen("reader");
@@ -473,6 +528,7 @@ async function present(extracted, rec) {
       pager.layout();
       restorePaged(prog);
     } else {
+      fitAllMath(article);
       restoreScroll(prog);
     }
   };
@@ -590,6 +646,14 @@ document.querySelectorAll(".theme-pick[data-theme]").forEach((btn) => {
 document.querySelectorAll(".mode-pick[data-mode]").forEach((btn) => {
   btn.addEventListener("click", () => setPageMode(btn.dataset.mode));
 });
+document.querySelectorAll(".effect-pick[data-effect]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const e = btn.dataset.effect;
+    if (e !== "slide" && e !== "curl" && e !== "none") return;
+    settings.pageEffect = e;
+    applySettings();
+  });
+});
 
 function setPageMode(mode) {
   if (mode !== "scroll" && mode !== "paged") return;
@@ -655,9 +719,12 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 
 window.addEventListener("resize", () => {
-  if (pager.isEnabled() && !reader.hidden) {
+  if (reader.hidden) return;
+  if (pager.isEnabled()) {
     const keep = pager.elementOnPage();
     pager.layout({ keepElement: keep });
+  } else {
+    fitAllMath(article);
   }
 });
 if (window.visualViewport) {

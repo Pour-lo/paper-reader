@@ -8,6 +8,7 @@ const defaultSettings = {
   margin: 22,
   theme: "day",
   pageMode: "scroll",
+  pageEffect: "slide",
 };
 
 function openDb() {

@@ -1,4 +1,4 @@
-const CACHE = "paper-reader-v6";
+const CACHE = "paper-reader-v7";
 const NETWORK_MS = 3000;
 const REVALIDATE_MS = 8000;
 
@@ -12,6 +12,10 @@ const CORE = [
   "./js/docx-extract.js",
   "./js/viewer.js",
   "./js/pager.js",
+  "./js/unzip.js",
+  "./js/omml.js",
+  "./js/math-render.js",
+  "./js/page-curl.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

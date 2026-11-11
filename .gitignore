@@ -1,2 +1,4 @@
-.DS_Store
 node_modules/
+tests/fixtures/user-paper.pdf
+tests/fixtures/private/
+screenshots/.tmp/
